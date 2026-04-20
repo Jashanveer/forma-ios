@@ -1,0 +1,30 @@
+## macOS
+.DS_Store
+
+## Xcode
+# Per-user state
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# Build artifacts
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Packages/
+Package.pins
+Package.resolved
+
+# CocoaPods / Carthage (unused but standard)
+Pods/
+Carthage/Build/
+
+## Misc
+*.hmap
+*.xcarchive
