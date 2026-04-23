@@ -21,6 +21,7 @@ struct TodayHeader: View {
 struct AddHabitBar: View {
     @Binding var newHabitTitle: String
     @Binding var selectedType: HabitEntryType
+    var hasOverdueTask: Bool = false
     let onAddHabit: (HabitEntryType, Date?) -> Void
 
     @State private var isHovered = false
@@ -28,6 +29,10 @@ struct AddHabitBar: View {
     @State private var dueAt: Date? = nil
     @State private var showDuePicker = false
     @FocusState private var fieldFocused: Bool
+
+    private var isBlockedByOverdue: Bool {
+        selectedType == .task && hasOverdueTask
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -76,7 +81,13 @@ struct AddHabitBar: View {
             .animation(.smooth(duration: 0.16), value: fieldFocused)
             .pressHover($isHovered)
 
-            if showValidationError {
+            if isBlockedByOverdue {
+                Label("Finish your overdue task before adding a new one.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(CleanShotTheme.danger)
+                    .padding(.leading, 16)
+                    .transition(.opacity.combined(with: .offset(y: -4)))
+            } else if showValidationError {
                 Text("Give your \(selectedType.title.lowercased()) a real name — something you'd actually say out loud.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -85,6 +96,7 @@ struct AddHabitBar: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: showValidationError)
+        .animation(.easeOut(duration: 0.2), value: isBlockedByOverdue)
     }
 
     private var placeholderText: String {
@@ -92,6 +104,7 @@ struct AddHabitBar: View {
     }
 
     private func attemptAdd() {
+        guard !isBlockedByOverdue else { return }
         guard isLikelyMeaningful(newHabitTitle) else {
             withAnimation { showValidationError = true }
             return
@@ -193,6 +206,15 @@ private struct DueDateControl: View {
 
     var body: some View {
         Button {
+            #if os(iOS)
+            // The due-date picker sits next to the add-task text field, which
+            // owns the software keyboard. Resign it before we present so the
+            // picker isn't squeezed into a 200pt strip above the keyboard.
+            UIApplication.shared.sendAction(
+                #selector(UIResponder.resignFirstResponder),
+                to: nil, from: nil, for: nil
+            )
+            #endif
             isPresented = true
         } label: {
             trigger
@@ -206,7 +228,13 @@ private struct DueDateControl: View {
                 isPresented: $isPresented
             )
             #if os(iOS)
-            .presentationCompactAdaptation(.popover)
+            // Present as a sheet on iPhone with detents so the calendar is
+            // always fully visible and cooperates with the keyboard. The
+            // previous `.popover` adaptation crammed everything into a tiny
+            // popup that clipped the "Other" calendar and the Done button.
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationCompactAdaptation(.sheet)
             #endif
         }
     }
@@ -244,6 +272,12 @@ private struct DueDateControl: View {
 
 private struct DueDatePopover: View {
     @Environment(\.colorScheme) private var colorScheme
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private var isCompact: Bool { horizontalSizeClass == .compact }
+    #else
+    private var isCompact: Bool { false }
+    #endif
     @Binding var dueAt: Date?
     @Binding var isPresented: Bool
 
@@ -270,6 +304,34 @@ private struct DueDatePopover: View {
     private var isOtherSelected: Bool { activePreset == nil }
 
     var body: some View {
+        Group {
+            if isCompact {
+                // Sheet layout on iPhone: the sheet supplies the rounded
+                // material background and drag handle, so we skip the custom
+                // popover chrome and wrap the content in a ScrollView so the
+                // "Other" calendar + action bar always stay reachable.
+                ScrollView {
+                    mainContent
+                        .padding(.top, 8)
+                        .padding(.bottom, 16)
+                }
+                .scrollIndicators(.hidden)
+            } else {
+                mainContent
+                    .frame(width: 328)
+                    .padding(.top, 2)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(CleanShotTheme.stroke(for: colorScheme), lineWidth: 1)
+                    )
+            }
+        }
+        .animation(.smooth(duration: 0.18), value: showsCustomCalendar)
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Due Date")
@@ -349,14 +411,6 @@ private struct DueDatePopover: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
         }
-        .frame(width: 328)
-        .padding(.top, 2)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(CleanShotTheme.stroke(for: colorScheme), lineWidth: 1)
-        )
-        .animation(.smooth(duration: 0.18), value: showsCustomCalendar)
     }
 
     private func presetButton(_ preset: DueDatePreset) -> some View {
@@ -985,6 +1039,12 @@ private struct SyncStatusBadge: View {
 private struct MatchedStampFrame: ViewModifier {
     let id: PersistentIdentifier
     let namespace: Namespace.ID?
+    /// HabitCard is the source of the morph (its frame defines where the
+    /// stamp arrives from). AmbientStamp is the destination and must be
+    /// `isSource: false` — otherwise SwiftUI picks between two "sources"
+    /// and the morph fails on iOS (macOS is more forgiving, but either
+    /// platform prefers exactly one source in a matched pair).
+    var isSource: Bool = true
 
     func body(content: Content) -> some View {
         if let namespace {
@@ -993,7 +1053,7 @@ private struct MatchedStampFrame: ViewModifier {
                 in: namespace,
                 properties: .frame,
                 anchor: .center,
-                isSource: true
+                isSource: isSource
             )
         } else {
             content
@@ -1013,10 +1073,22 @@ struct DoneHabitPillsBackground: View {
     private static let minStampSeparation: CGFloat = 150
     private static let stampMarginX: CGFloat = 48
     private static let stampMarginY: CGFloat = 56
+    private static let stampNaturalSize = CGSize(width: 106, height: 88)
+    private static let stampViewportPadding: CGFloat = 8
+
+    // Caching the layout size keeps the stamps from reshuffling when the
+    // keyboard slides up and shrinks the view height. We only refresh the
+    // cache on width changes (rotation / window resize) — a height-only
+    // change is essentially always the software keyboard. We can't use
+    // `.ignoresSafeArea(.keyboard)` here because that shifts the view into
+    // a different coordinate space from the HabitCard source, which breaks
+    // the matchedGeometry morph when a habit is checked off.
+    @State private var cachedSize: CGSize = .zero
 
     var body: some View {
         GeometryReader { geo in
-            let layout = computeLayout(in: geo.size)
+            let sizeToUse = cachedSize == .zero ? geo.size : cachedSize
+            let layout = computeLayout(in: sizeToUse)
             TimelineView(.animation(minimumInterval: 1 / 30)) { tl in
                 let t = tl.date.timeIntervalSinceReferenceDate
                 ZStack {
@@ -1035,10 +1107,30 @@ struct DoneHabitPillsBackground: View {
                             .rotationEffect(.degrees(tilt))
                             .offset(x: xOff, y: yOff)
                             .position(x: slot.x, y: slot.y)
+                            // Apply matched geometry AFTER .position so the
+                            // stamp's destination frame is the real on-screen
+                            // coord (slot.x, slot.y), not the pre-positioned
+                            // natural frame. `isSource: false` makes the card
+                            // the authoritative source during the overlap —
+                            // without it the morph fails on iOS.
+                            .modifier(MatchedStampFrame(
+                                id: habit.persistentModelID,
+                                namespace: stampNamespace,
+                                isSource: false
+                            ))
                             .transition(.opacity.combined(with: .scale(scale: 0.88)))
                         }
                     }
                 }
+            }
+            .onAppear {
+                if cachedSize == .zero { cachedSize = geo.size }
+            }
+            .onChange(of: geo.size.width) { _, _ in
+                // Width-only update fires on rotation / window resize —
+                // both cases where we *do* want a fresh layout. Height-only
+                // changes (keyboard) are intentionally ignored.
+                cachedSize = geo.size
             }
         }
         .allowsHitTesting(false)
@@ -1085,7 +1177,8 @@ struct DoneHabitPillsBackground: View {
                 seed: seed,
                 size: size,
                 noFly: noFly,
-                placed: placed
+                placed: placed,
+                params: params
             )
             placed.append(point)
             result[habit.persistentModelID] = Slot(
@@ -1133,17 +1226,21 @@ struct DoneHabitPillsBackground: View {
         seed: Double,
         size: CGSize,
         noFly: CGRect,
-        placed: [CGPoint]
+        placed: [CGPoint],
+        params: StampParams
     ) -> CGPoint {
         let narrow = size.width < 500
-        let marginX: CGFloat = narrow ? 14 : Self.stampMarginX
-        let marginY: CGFloat = narrow ? 40 : Self.stampMarginY
-        let pushDistance: CGFloat = narrow ? 60 : 24
+        let floatPadding = CGFloat(params.amp) + Self.stampViewportPadding
+        let visibleMarginX = (Self.stampNaturalSize.width * params.scale / 2) + floatPadding
+        let visibleMarginY = (Self.stampNaturalSize.height * params.scale / 2) + floatPadding
+        let marginX = min(max(narrow ? 14 : Self.stampMarginX, visibleMarginX), size.width / 2)
+        let marginY = min(max(narrow ? 40 : Self.stampMarginY, visibleMarginY), size.height / 2)
+        let pushDistance = max(narrow ? 60 : 24, visibleMarginY)
 
         let minX = marginX
-        let maxX = max(minX + 1, size.width - marginX)
+        let maxX = max(minX, size.width - marginX)
         let minY = marginY
-        let maxY = max(minY + 1, size.height - marginY)
+        let maxY = max(minY, size.height - marginY)
 
         var best: CGPoint = CGPoint(x: minX, y: minY)
         var bestScore: CGFloat = -.infinity
@@ -1163,8 +1260,8 @@ struct DoneHabitPillsBackground: View {
                     // strips and re-seed y within that strip so the stamps
                     // spread rather than stacking at the strip boundary.
                     let ry = fract(sin(seed * (917.3 + Double(attempt) * 3.1)) * 28417.9)
-                    let topMaxY = max(minY + 1, noFly.minY - pushDistance)
-                    let botMinY = min(maxY - 1, noFly.maxY + pushDistance)
+                    let topMaxY = min(max(minY, noFly.minY - pushDistance), maxY)
+                    let botMinY = max(min(maxY, noFly.maxY + pushDistance), minY)
                     if candidate.y - noFly.minY <= noFly.maxY - candidate.y {
                         candidate.y = CGFloat(ry) * (topMaxY - minY) + minY
                     } else {
@@ -1461,7 +1558,10 @@ private struct AmbientStamp: View {
         .shadow(color: .black.opacity(0.06), radius: 3,  x: 0, y: 1)
         .scaleEffect(scale)
         .opacity(0.82)
-        .modifier(MatchedStampFrame(id: habit.persistentModelID, namespace: stampNamespace))
+        // NOTE: matchedGeometryEffect is *not* applied inside the body. It's
+        // attached by the parent DoneHabitPillsBackground AFTER the `.position`
+        // modifier so that the "destination" frame reflects the stamp's
+        // actual on-screen position, not the pre-position natural layout.
         .onAppear { pulse = true }
     }
 }

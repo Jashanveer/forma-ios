@@ -40,16 +40,20 @@ struct ContentView: View {
     // AI mentor is always visible once the user is signed in — no preview
     // toggle and no 7-day gate. The auto-matching flow has been retired (see
     // task: unlock mentor as AI default).
+    // AI mentor is always on once the user is signed in — but only on the
+    // dashboard. The onboarding overlay covers the dashboard, so suppress
+    // Bruce while it's up so he doesn't peek out from behind the cover.
     private var showMentorCharacter: Bool {
-        backend.isAuthenticated
+        backend.isAuthenticated && !showOnboarding
     }
 
     // Mentee slot shows a top-leaderboard friend. Visible when the user has
     // at least one friend who appears on the leaderboard. `friendCount` is a
     // cheap proxy — the RiveCharacterView downstream picks the actual
     // leaderboard entry to display, and renders nothing when the pool is empty.
+    // Same onboarding gate as Bruce so the orange character stays hidden too.
     private var showMenteeCharacter: Bool {
-        guard backend.isAuthenticated else { return false }
+        guard backend.isAuthenticated, !showOnboarding else { return false }
         let friendCount = backend.dashboard?.social?.friendCount ?? 0
         let leaderboard = backend.dashboard?.weeklyChallenge.leaderboard ?? []
         return friendCount > 0 && !leaderboard.isEmpty
@@ -103,6 +107,7 @@ struct ContentView: View {
         }
         .onReceive(Timer.publish(every: 300, on: .main, in: .common).autoconnect()) { _ in
             refreshTimeReminders()
+            handleOverdueTasks()
         }
         .animation(.smooth(duration: 0.2), value: colorScheme)
         .task {
@@ -127,6 +132,13 @@ struct ContentView: View {
 
         guard backend.isAuthenticated else {
             backend.errorMessage = "Sign in before adding items."
+            return
+        }
+
+        // Defensive guard mirroring AddHabitBar's UI block: an unfinished
+        // overdue task must be cleared before any new task is created.
+        if entryType == .task && habits.contains(where: { $0.entryType == .task && $0.isOverdue() }) {
+            backend.errorMessage = "Finish your overdue task before adding a new one."
             return
         }
 
@@ -183,10 +195,15 @@ struct ContentView: View {
                 let remoteTasks = try await tasksResponse
                 let remote = remoteHabits + remoteTasks
                 applyReconcile(SyncEngine.reconcile(local: habits, remote: remote))
-                handleOverdueTasks()
                 saveAndRefreshWidgets()
                 backend.errorMessage  = nil
+                // Load the dashboard before handling overdue tasks so the
+                // freeze count is accurate — otherwise a cold launch with
+                // overdue tasks will fall back to the XP-dock path because
+                // `backend.dashboard` is still nil.
                 await backend.refreshDashboard()
+                handleOverdueTasks()
+                saveAndRefreshWidgets()
                 refreshTimeReminders()
             } catch {
                 backend.errorMessage = error.localizedDescription
@@ -430,22 +447,47 @@ struct ContentView: View {
 
     // MARK: - Overdue task enforcement
 
+    /// Overdue tasks stay on the list and continue to block new task creation
+    /// until the user finishes them. The first time a task crosses its due
+    /// date we apply a one-shot penalty: spend a streak freeze if any are
+    /// available, otherwise dock local XP. The `overduePenaltyApplied` flag on
+    /// `Habit` guarantees we never penalise the same task twice.
     private func handleOverdueTasks() {
-        let overdue = habits.filter { $0.entryType == .task && $0.isOverdue() }
-        guard !overdue.isEmpty else { return }
-        for task in overdue {
-            let backendId = task.backendId
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                modelContext.delete(task)
-            }
-            guard let backendId, backend.isAuthenticated else { continue }
-            Task {
-                try? await backend.deleteTask(taskID: backendId)
+        let unpenalised = habits.filter {
+            $0.entryType == .task && $0.isOverdue() && !$0.overduePenaltyApplied
+        }
+        guard !unpenalised.isEmpty else { return }
+
+        var freezesUsed = 0
+        var xpDocked = 0
+        let userId = backend.currentUserId
+
+        for task in unpenalised {
+            task.overduePenaltyApplied = true
+            task.updatedAt = Date()
+
+            let availableFreezes = (backend.dashboard?.rewards.freezesAvailable ?? 0) - freezesUsed
+            if availableFreezes > 0 {
+                freezesUsed += 1
+                let dueKey = task.dueAt.map { DateKey.key(for: $0) } ?? todayKey
+                Task { await backend.useStreakFreeze(dateKey: dueKey) }
+            } else {
+                xpDocked += OverduePenaltyStore.xpPerOverdueTask
+                OverduePenaltyStore.add(OverduePenaltyStore.xpPerOverdueTask, for: userId)
             }
         }
+
         saveAndRefreshWidgets()
-        let count = overdue.count
-        backend.statusMessage = "\(count) overdue \(count == 1 ? "task" : "tasks") removed — your consistency score reflects the miss"
+
+        let count = unpenalised.count
+        let noun = count == 1 ? "task" : "tasks"
+        if xpDocked > 0 && freezesUsed > 0 {
+            backend.statusMessage = "\(count) overdue \(noun) — \(freezesUsed) freeze used, -\(xpDocked) XP. Finish them to unblock new tasks."
+        } else if freezesUsed > 0 {
+            backend.statusMessage = "\(count) overdue \(noun) — \(freezesUsed) streak \(freezesUsed == 1 ? "freeze" : "freezes") spent. Finish them to unblock new tasks."
+        } else {
+            backend.statusMessage = "\(count) overdue \(noun) — -\(xpDocked) XP. Finish them to unblock new tasks."
+        }
     }
 
     // MARK: - Archive habits / delete tasks

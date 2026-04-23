@@ -17,9 +17,9 @@ struct LoopingVideoView: NSViewRepresentable {
         }
 
         let asset = AVURLAsset(url: url)
-        let item = AVPlayerItem(asset: asset)
-        let player = AVQueuePlayer(playerItem: item)
-        let looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset))
+        let player = AVQueuePlayer()
+        let templateItem = AVPlayerItem(asset: asset)
+        let looper = AVPlayerLooper(player: player, templateItem: templateItem)
 
         let playerLayer = AVPlayerLayer(player: player)
         playerLayer.videoGravity = .resizeAspect
@@ -36,13 +36,7 @@ struct LoopingVideoView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.playerLayer?.frame = nsView.bounds
-
-        if isPlaying {
-            context.coordinator.player?.play()
-        } else {
-            context.coordinator.player?.pause()
-            context.coordinator.player?.seek(to: .zero)
-        }
+        context.coordinator.apply(isPlaying: isPlaying)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -51,6 +45,20 @@ struct LoopingVideoView: NSViewRepresentable {
         var player: AVQueuePlayer?
         var looper: AVPlayerLooper?
         var playerLayer: AVPlayerLayer?
+        var isPlaying: Bool = false
+
+        func apply(isPlaying desired: Bool) {
+            guard desired != isPlaying else { return }
+            isPlaying = desired
+            if desired {
+                player?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak player = player] _ in
+                    player?.play()
+                }
+            } else {
+                player?.pause()
+                player?.seek(to: .zero)
+            }
+        }
     }
 }
 
@@ -71,9 +79,9 @@ struct LoopingVideoView: UIViewRepresentable {
         }
 
         let asset = AVURLAsset(url: url)
-        let item = AVPlayerItem(asset: asset)
-        let player = AVQueuePlayer(playerItem: item)
-        let looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(asset: asset))
+        let player = AVQueuePlayer()
+        let templateItem = AVPlayerItem(asset: asset)
+        let looper = AVPlayerLooper(player: player, templateItem: templateItem)
 
         view.playerLayer.player = player
         view.playerLayer.videoGravity = .resizeAspect
@@ -86,12 +94,7 @@ struct LoopingVideoView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PlayerContainerView, context: Context) {
-        if isPlaying {
-            context.coordinator.player?.play()
-        } else {
-            context.coordinator.player?.pause()
-            context.coordinator.player?.seek(to: .zero)
-        }
+        context.coordinator.apply(isPlaying: isPlaying)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -99,6 +102,27 @@ struct LoopingVideoView: UIViewRepresentable {
     final class Coordinator {
         var player: AVQueuePlayer?
         var looper: AVPlayerLooper?
+        var isPlaying: Bool = false
+
+        // Only react to actual transitions. `updateUIView` fires on every
+        // SwiftUI re-render (which happens ~60–120× per second while Bruce
+        // walks), so calling `play()` + `seek(to:)` every time is both
+        // wasteful and a source of the "Bruce slides while standing" bug:
+        // the seek was issued AFTER play() and could race, starting the
+        // video from a stale position. Sequencing seek → play inside the
+        // completion handler locks the video to frame 0 at each cycle.
+        func apply(isPlaying desired: Bool) {
+            guard desired != isPlaying else { return }
+            isPlaying = desired
+            if desired {
+                player?.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak player = player] _ in
+                    player?.play()
+                }
+            } else {
+                player?.pause()
+                player?.seek(to: .zero)
+            }
+        }
     }
 
     final class PlayerContainerView: UIView {

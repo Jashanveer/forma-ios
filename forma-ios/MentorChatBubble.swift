@@ -5,6 +5,7 @@ struct MentorChatBubble: View {
     var isAI: Bool = false
     let messages: [AccountabilityDashboard.Message]
     @Binding var messageText: String
+    var currentUserId: String? = nil
     let onSend: () -> Void
     let onClose: () -> Void
 
@@ -57,7 +58,7 @@ struct MentorChatBubble: View {
                         }
 
                         ForEach(messages) { msg in
-                            ChatMessageRow(message: msg)
+                            ChatMessageRow(message: msg, isFromCurrentUser: isFromCurrentUser(msg))
                                 .id(msg.id)
                         }
                     }
@@ -124,6 +125,11 @@ struct MentorChatBubble: View {
                     lineWidth: 0.5
                 )
         )
+    }
+
+    private func isFromCurrentUser(_ message: AccountabilityDashboard.Message) -> Bool {
+        guard let currentUserId else { return false }
+        return String(message.senderId) == currentUserId
     }
 
     private var titleBarColor: Color {

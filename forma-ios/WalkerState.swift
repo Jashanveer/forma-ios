@@ -2,6 +2,9 @@ import Foundation
 import CoreGraphics
 import Observation
 import QuartzCore
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @Observable
 class WalkerState {
@@ -10,28 +13,46 @@ class WalkerState {
     var isWalking = false
     var travelDistance: CGFloat = 500
 
-    // Video timing (from lil-agents frame analysis for Bruce)
+    // Video timing (from lil-agents frame analysis for Bruce).
+    // The standing buffers at both ends are padded beyond the raw frame
+    // analysis so positionProgress only changes while the video is definitely
+    // showing walking frames — absorbs the ~50–150ms latency between
+    // `AVPlayer.play()` being called and the first walking frame actually
+    // landing on screen. Without the pad, Bruce would drift sideways while
+    // his legs were still in the standing pose ("sliding while standing").
     private let videoDuration: CFTimeInterval = 10.0
-    private let accelStart: CFTimeInterval = 3.0
-    private let fullSpeedStart: CFTimeInterval = 3.75
-    private let decelStart: CFTimeInterval = 8.0
-    private let walkStop: CFTimeInterval = 8.5
+    private let accelStart: CFTimeInterval = 3.3
+    private let fullSpeedStart: CFTimeInterval = 4.0
+    private let decelStart: CFTimeInterval = 7.8
+    private let walkStop: CFTimeInterval = 8.3
 
     private var walkStartTime: CFTimeInterval = 0
     private var walkStartPos: CGFloat = 0
     private var walkEndPos: CGFloat = 0
+    #if canImport(UIKit)
+    private var displayLink: CADisplayLink?
+    private var displayLinkTarget: DisplayLinkTarget?
+    #else
     private var frameTimer: Timer?
+    #endif
+    private var pauseWorkItem: DispatchWorkItem?
+
+    deinit {
+        stopTicking()
+        pauseWorkItem?.cancel()
+    }
 
     func start() {
         enterPause()
     }
 
     private func enterPause() {
+        stopTicking()
         isWalking = false
         let delay = Double.random(in: 3.0...8.0)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.startWalk()
-        }
+        let work = DispatchWorkItem { [weak self] in self?.startWalk() }
+        pauseWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func startWalk() {
@@ -57,19 +78,44 @@ class WalkerState {
 
         isWalking = true
         walkStartTime = CACurrentMediaTime()
+        startTicking()
+    }
 
-        frameTimer?.invalidate()
+    private func startTicking() {
+        stopTicking()
+        #if canImport(UIKit)
+        let target = DisplayLinkTarget { [weak self] in self?.tick() }
+        let link = CADisplayLink(target: target, selector: #selector(DisplayLinkTarget.fire))
+        // Opt into ProMotion. The Info.plist key
+        // `CADisableMinimumFrameDurationOnPhone` also has to be set,
+        // otherwise iOS caps third-party apps at 60Hz regardless.
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        displayLinkTarget = target
+        displayLink = link
+        #else
         frameTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        #endif
+    }
+
+    private func stopTicking() {
+        #if canImport(UIKit)
+        displayLink?.invalidate()
+        displayLink = nil
+        displayLinkTarget = nil
+        #else
+        frameTimer?.invalidate()
+        frameTimer = nil
+        #endif
     }
 
     private func tick() {
         let elapsed = CACurrentMediaTime() - walkStartTime
 
         if elapsed >= videoDuration {
-            frameTimer?.invalidate()
-            frameTimer = nil
+            stopTicking()
             positionProgress = walkEndPos
             enterPause()
             return
@@ -105,3 +151,14 @@ class WalkerState {
         }
     }
 }
+
+#if canImport(UIKit)
+// CADisplayLink needs an @objc selector target. Keeping WalkerState a plain
+// @Observable Swift class means we route the callback through this thin
+// NSObject wrapper.
+private final class DisplayLinkTarget: NSObject {
+    private let closure: () -> Void
+    init(_ closure: @escaping () -> Void) { self.closure = closure }
+    @objc func fire() { closure() }
+}
+#endif
