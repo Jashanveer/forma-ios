@@ -235,7 +235,15 @@ struct OnboardingView: View {
 
     private func addHabit() {
         let trimmed = habitInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !stagedHabits.contains(trimmed) else { return }
+        guard !trimmed.isEmpty else { return }
+        // Case-insensitive so "Run" and "run" don't both land on the list.
+        let alreadyStaged = stagedHabits.contains {
+            $0.caseInsensitiveCompare(trimmed) == .orderedSame
+        }
+        guard !alreadyStaged else {
+            habitInput = ""
+            return
+        }
         withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
             stagedHabits.append(trimmed)
         }

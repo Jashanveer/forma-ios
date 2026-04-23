@@ -22,6 +22,7 @@ struct AddHabitBar: View {
     @Binding var newHabitTitle: String
     @Binding var selectedType: HabitEntryType
     var hasOverdueTask: Bool = false
+    var hasDuplicateEntry: Bool = false
     let onAddHabit: (HabitEntryType, Date?) -> Void
 
     @State private var isHovered = false
@@ -32,6 +33,12 @@ struct AddHabitBar: View {
 
     private var isBlockedByOverdue: Bool {
         selectedType == .task && hasOverdueTask
+    }
+
+    /// Only surface the duplicate warning once the user has typed something;
+    /// otherwise the field is empty and there's nothing to dedupe against.
+    private var isBlockedByDuplicate: Bool {
+        hasDuplicateEntry && !newHabitTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -87,6 +94,12 @@ struct AddHabitBar: View {
                     .foregroundStyle(CleanShotTheme.danger)
                     .padding(.leading, 16)
                     .transition(.opacity.combined(with: .offset(y: -4)))
+            } else if isBlockedByDuplicate {
+                Label(duplicateWarningText, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(CleanShotTheme.danger)
+                    .padding(.leading, 16)
+                    .transition(.opacity.combined(with: .offset(y: -4)))
             } else if showValidationError {
                 Text("Give your \(selectedType.title.lowercased()) a real name — something you'd actually say out loud.")
                     .font(.caption)
@@ -97,6 +110,14 @@ struct AddHabitBar: View {
         }
         .animation(.easeOut(duration: 0.2), value: showValidationError)
         .animation(.easeOut(duration: 0.2), value: isBlockedByOverdue)
+        .animation(.easeOut(duration: 0.2), value: isBlockedByDuplicate)
+    }
+
+    private var duplicateWarningText: String {
+        switch selectedType {
+        case .habit: return "You already have a habit with this name."
+        case .task:  return "You already have a pending task with this name."
+        }
     }
 
     private var placeholderText: String {
@@ -105,6 +126,7 @@ struct AddHabitBar: View {
 
     private func attemptAdd() {
         guard !isBlockedByOverdue else { return }
+        guard !isBlockedByDuplicate else { return }
         guard isLikelyMeaningful(newHabitTitle) else {
             withAnimation { showValidationError = true }
             return

@@ -142,6 +142,15 @@ struct ContentView: View {
             return
         }
 
+        // Duplicate guard: refuse if the same title already exists (habits
+        // always, tasks only while the previous one is still pending).
+        if Habit.hasDuplicate(title: title, entryType: entryType, in: habits) {
+            backend.errorMessage = entryType == .habit
+                ? "You already have a habit called \u{201C}\(title)\u{201D}."
+                : "You already have a pending task called \u{201C}\(title)\u{201D}."
+            return
+        }
+
         // Optimistic local insert with .pending status
         let localHabit = Habit(
             title: title,
@@ -587,9 +596,17 @@ struct ContentView: View {
     // MARK: - Onboarding
 
     private func completeOnboarding(_ habitTitles: [String]) {
+        // Dedupe across both the existing habit list and earlier entries in
+        // this same batch — the SwiftData @Query doesn't re-fire inside the
+        // loop, so a local seen-set is the only way to catch duplicates that
+        // appear back-to-back in `habitTitles`.
+        var seen = Set(habits.map { Habit.duplicateMatchKey($0.title) })
         for title in habitTitles {
             let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
+            let key = Habit.duplicateMatchKey(trimmed)
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
             let habit = Habit(title: trimmed, entryType: .habit, syncStatus: .pending)
             modelContext.insert(habit)
         }

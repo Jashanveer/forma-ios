@@ -34,6 +34,11 @@ struct CenterPanel: View {
     private var hasOverdueTask: Bool {
         habits.contains { $0.entryType == .task && $0.isOverdue() }
     }
+    /// Live mirror of `Habit.hasDuplicate` against the current input so the
+    /// AddHabitBar can warn the user *before* they hit Add.
+    private var hasDuplicateEntry: Bool {
+        Habit.hasDuplicate(title: newHabitTitle, entryType: newEntryType, in: habits)
+    }
     private var isEmpty: Bool { habits.isEmpty }
     private var allDoneToday: Bool { !habits.isEmpty && pendingHabits.isEmpty }
     private var isCompact: Bool { !isEmpty && !allDoneToday }
@@ -50,6 +55,7 @@ struct CenterPanel: View {
                 newHabitTitle: $newHabitTitle,
                 selectedType: $newEntryType,
                 hasOverdueTask: hasOverdueTask,
+                hasDuplicateEntry: hasDuplicateEntry,
                 onAddHabit: onAddHabit
             )
                 .frame(maxWidth: 520)

@@ -137,4 +137,35 @@ final class Habit {
         let dueDay = calendar.startOfDay(for: due)
         return dueDay < today
     }
+
+    // MARK: - Duplicate detection
+
+    /// Normalized match key: trimmed + lower-cased so "Run ", "run", "RUN"
+    /// all collide. Returning an empty string means "no real title to match".
+    static func duplicateMatchKey(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// True when `candidate` would duplicate an entry of the same kind.
+    /// Habits: any active habit with the same title blocks adding (they're
+    /// permanent, so a second identical row is never wanted). Tasks: only
+    /// blocks while a same-titled task is still pending — once completed the
+    /// user can re-add it (e.g. recurring errands like "Pay rent").
+    /// Archived entries are ignored so the user can start over on a habit
+    /// they previously gave up on.
+    static func hasDuplicate(title candidate: String,
+                             entryType: HabitEntryType,
+                             in habits: [Habit]) -> Bool {
+        let key = duplicateMatchKey(candidate)
+        guard !key.isEmpty else { return false }
+        return habits.contains { existing in
+            guard !existing.isArchived,
+                  existing.entryType == entryType,
+                  duplicateMatchKey(existing.title) == key else { return false }
+            switch entryType {
+            case .habit: return true
+            case .task:  return !existing.isTaskCompleted
+            }
+        }
+    }
 }
