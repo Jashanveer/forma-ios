@@ -762,6 +762,17 @@ struct HabitListSection: View {
     }
 }
 
+struct HabitCardFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [PersistentIdentifier: CGRect] = [:]
+
+    static func reduce(
+        value: inout [PersistentIdentifier: CGRect],
+        nextValue: () -> [PersistentIdentifier: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 struct MinimalBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
@@ -826,6 +837,7 @@ struct HabitCard: View {
     let onDelete: (Habit) -> Void
     var cluster: AccountabilityDashboard.HabitTimeCluster? = nil
     var stampNamespace: Namespace.ID? = nil
+    var reportsFrame: Bool = true
 
     @State private var isHovered = false
     @State private var showArchiveConfirm = false
@@ -952,6 +964,16 @@ struct HabitCard: View {
         .animation(.smooth(duration: 0.15), value: isHovered)
         .pressHover($isHovered)
         .modifier(MatchedStampFrame(id: habit.persistentModelID, namespace: stampNamespace))
+        .background {
+            if reportsFrame {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: HabitCardFramePreferenceKey.self,
+                        value: [habit.persistentModelID: proxy.frame(in: .global)]
+                    )
+                }
+            }
+        }
         .contextMenu {
             if isHabitEntry {
                 Button(role: .destructive) {
@@ -1067,6 +1089,9 @@ struct DoneHabitPillsBackground: View {
     let habits: [Habit]
     let todayKey: String
     var stampNamespace: Namespace.ID? = nil
+    var stampScaleMultiplier: CGFloat = 1
+    var hiddenStampIds: Set<PersistentIdentifier> = []
+    var compactMaxStamps: Int = 4
 
     private static let noFlyCenterWidthRatio: CGFloat = 0.58
     private static let noFlyCenterHeightRatio: CGFloat = 0.62
@@ -1094,6 +1119,7 @@ struct DoneHabitPillsBackground: View {
                 ZStack {
                     ForEach(habits) { habit in
                         if let slot = layout[habit.persistentModelID] {
+                            let isHidden = hiddenStampIds.contains(habit.persistentModelID)
                             let xOff = cos(t * slot.speed * 0.55 + slot.phase) * slot.amp
                             let yOff = sin(t * slot.speed + slot.phase + 0.8) * slot.amp * 0.6
                             let tilt = slot.restAngle + sin(t * slot.speed * 0.25 + slot.phase) * 2.5
@@ -1102,7 +1128,7 @@ struct DoneHabitPillsBackground: View {
                                 todayKey: todayKey,
                                 accent: slot.accent,
                                 scale: slot.scale,
-                                stampNamespace: stampNamespace
+                                stampNamespace: nil
                             )
                             .rotationEffect(.degrees(tilt))
                             .offset(x: xOff, y: yOff)
@@ -1118,6 +1144,7 @@ struct DoneHabitPillsBackground: View {
                                 namespace: stampNamespace,
                                 isSource: false
                             ))
+                            .opacity(isHidden ? 0 : 1)
                             .transition(.opacity.combined(with: .scale(scale: 0.88)))
                         }
                     }
@@ -1143,6 +1170,23 @@ struct DoneHabitPillsBackground: View {
         let scale: CGFloat
     }
 
+    static func flightDestination(
+        for habit: Habit,
+        among habits: [Habit],
+        in size: CGSize,
+        stampScaleMultiplier: CGFloat,
+        compactMaxStamps: Int = 4
+    ) -> (point: CGPoint, accent: Color, scale: CGFloat)? {
+        let layout = DoneHabitPillsBackground(
+            habits: habits,
+            todayKey: "",
+            stampScaleMultiplier: stampScaleMultiplier,
+            compactMaxStamps: compactMaxStamps
+        ).computeLayout(in: size)
+        guard let slot = layout[habit.persistentModelID] else { return nil }
+        return (CGPoint(x: slot.x, y: slot.y), slot.accent, slot.scale)
+    }
+
     /// Greedy placement: for each stamp (stable order by createdAt) pick a seeded
     /// candidate, then nudge outward if it collides with an earlier stamp or
     /// intersects the central no-fly rect that the main list occupies.
@@ -1152,14 +1196,13 @@ struct DoneHabitPillsBackground: View {
         let narrow = size.width < 500
         // On narrow screens the middle of the layout is occupied edge-to-edge by
         // the habit list / input card — leave only thin strips at the very top
-        // and very bottom for ambient stamps, and cap the number of stamps so
-        // they don't crowd those strips.
+        // and very bottom for ambient stamps. The cap is configurable because
+        // iPhone uses smaller stamps and must keep newly completed items visible.
         let widthRatio: CGFloat = narrow ? 0.96 : Self.noFlyCenterWidthRatio
         let heightRatio: CGFloat = narrow ? 0.62 : Self.noFlyCenterHeightRatio
-        let narrowMaxStamps = 4
 
         let sortedHabits = habits.sorted { $0.createdAt < $1.createdAt }
-        let ordered = narrow ? Array(sortedHabits.prefix(narrowMaxStamps)) : sortedHabits
+        let ordered = narrow ? Array(sortedHabits.prefix(compactMaxStamps)) : sortedHabits
         let noFly = CGRect(
             x: size.width * (1 - widthRatio) / 2,
             y: size.height * (1 - heightRatio) / 2,
@@ -1189,7 +1232,7 @@ struct DoneHabitPillsBackground: View {
                 amp: params.amp,
                 restAngle: params.restAngle,
                 accent: params.accent,
-                scale: params.scale
+                scale: params.scale * stampScaleMultiplier
             )
         }
         return result
@@ -1231,8 +1274,9 @@ struct DoneHabitPillsBackground: View {
     ) -> CGPoint {
         let narrow = size.width < 500
         let floatPadding = CGFloat(params.amp) + Self.stampViewportPadding
-        let visibleMarginX = (Self.stampNaturalSize.width * params.scale / 2) + floatPadding
-        let visibleMarginY = (Self.stampNaturalSize.height * params.scale / 2) + floatPadding
+        let effectiveScale = params.scale * stampScaleMultiplier
+        let visibleMarginX = (Self.stampNaturalSize.width * effectiveScale / 2) + floatPadding
+        let visibleMarginY = (Self.stampNaturalSize.height * effectiveScale / 2) + floatPadding
         let marginX = min(max(narrow ? 14 : Self.stampMarginX, visibleMarginX), size.width / 2)
         let marginY = min(max(narrow ? 40 : Self.stampMarginY, visibleMarginY), size.height / 2)
         let pushDistance = max(narrow ? 60 : 24, visibleMarginY)
@@ -1488,7 +1532,7 @@ struct FriendsLeaderboardPill: View {
 
 // MARK: - Ambient done-habit stamps
 
-private struct AmbientStamp: View {
+struct AmbientStamp: View {
     let habit: Habit
     let todayKey: String
     let accent: Color
@@ -1558,10 +1602,10 @@ private struct AmbientStamp: View {
         .shadow(color: .black.opacity(0.06), radius: 3,  x: 0, y: 1)
         .scaleEffect(scale)
         .opacity(0.82)
-        // NOTE: matchedGeometryEffect is *not* applied inside the body. It's
-        // attached by the parent DoneHabitPillsBackground AFTER the `.position`
-        // modifier so that the "destination" frame reflects the stamp's
-        // actual on-screen position, not the pre-position natural layout.
+        .modifier(MatchedStampFrame(
+            id: habit.persistentModelID,
+            namespace: stampNamespace
+        ))
         .onAppear { pulse = true }
     }
 }

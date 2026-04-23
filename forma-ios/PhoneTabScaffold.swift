@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftData
 import SwiftUI
+import UIKit
 
 /// iPhone-specific root layout. Mirrors the Forma iOS wireframes: a five-tab
 /// `TabView` (Today / Stats / Friends / Account / Calendar) replaces the macOS
@@ -35,6 +36,15 @@ struct PhoneTabScaffold: View {
     let onCompleteOnboarding: ([String]) -> Void
 
     @State private var selectedTab: Tab = .today
+    @State private var habitCardFrames: [PersistentIdentifier: CGRect] = [:]
+    @State private var activeStampFlights: [PersistentIdentifier: PhoneStampFlight] = [:]
+
+    private let phoneStampScale: CGFloat = 0.75
+    private let phoneStampLimit = 48
+
+    private var isRunningOnPhone: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -85,48 +95,76 @@ struct PhoneTabScaffold: View {
     // MARK: - Today
 
     private var todayTab: some View {
-        ZStack {
-            MinimalBackground()
-                .ignoresSafeArea()
-
-            DoneHabitPillsBackground(
-                habits: habits.filter {
-                    $0.completedDayKeys.contains(todayKey)
-                        && !stampStagingIds.contains($0.persistentModelID)
-                },
-                todayKey: todayKey,
-                stampNamespace: stampNamespace
-            )
-            .allowsHitTesting(false)
-
-            CenterPanel(
-                habits: habits,
-                todayKey: todayKey,
-                newHabitTitle: $newHabitTitle,
-                newEntryType: $newEntryType,
-                metrics: metrics,
-                clusters: backend.dashboard?.habitClusters ?? [],
-                stampNamespace: stampNamespace,
-                stampStagingIds: stampStagingIds,
-                onAddHabit: onAddHabit,
-                onToggleHabit: onToggleHabit,
-                onDeleteHabit: onDeleteHabit
-            )
-            .padding(.horizontal, 4)
-
-            if showMentorCharacter && backend.isAuthenticated {
-                MentorCharacterView(backend: backend, nudge: $mentorNudge)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .allowsHitTesting(true)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .ignoresSafeArea(.keyboard)
+        GeometryReader { geo in
+            let rootFrame = geo.frame(in: .global)
+            let rootSize = geo.size
+            let completedBackgroundHabits = habits.filter {
+                $0.completedDayKeys.contains(todayKey)
+                    && !stampStagingIds.contains($0.persistentModelID)
             }
 
-            if showMenteeCharacter && backend.isAuthenticated {
-                MenteeCharacterView(backend: backend)
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .ignoresSafeArea(.keyboard)
+            ZStack {
+                MinimalBackground()
+                    .ignoresSafeArea()
+
+                DoneHabitPillsBackground(
+                    habits: completedBackgroundHabits,
+                    todayKey: todayKey,
+                    stampNamespace: isRunningOnPhone ? nil : stampNamespace,
+                    stampScaleMultiplier: isRunningOnPhone ? phoneStampScale : 1,
+                    hiddenStampIds: isRunningOnPhone ? Set(activeStampFlights.keys) : [],
+                    compactMaxStamps: isRunningOnPhone ? phoneStampLimit : 4
+                )
+                .allowsHitTesting(false)
+                .zIndex(0)
+
+                CenterPanel(
+                    habits: habits,
+                    todayKey: todayKey,
+                    newHabitTitle: $newHabitTitle,
+                    newEntryType: $newEntryType,
+                    metrics: metrics,
+                    clusters: backend.dashboard?.habitClusters ?? [],
+                    stampNamespace: stampNamespace,
+                    stampStagingIds: stampStagingIds,
+                    enableStampMatchedGeometry: !isRunningOnPhone,
+                    onAddHabit: onAddHabit,
+                    onToggleHabit: onToggleHabit,
+                    onDeleteHabit: onDeleteHabit
+                )
+                .padding(.horizontal, 4)
+                .zIndex(1)
+
+                if isRunningOnPhone {
+                    ForEach(Array(activeStampFlights.values)) { flight in
+                        PhoneStampFlightView(flight: flight, todayKey: todayKey)
+                            .zIndex(2)
+                    }
+                }
+
+                if showMentorCharacter && backend.isAuthenticated {
+                    MentorCharacterView(backend: backend, nudge: $mentorNudge)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        .allowsHitTesting(true)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .ignoresSafeArea(.keyboard)
+                }
+
+                if showMenteeCharacter && backend.isAuthenticated {
+                    MenteeCharacterView(backend: backend)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .ignoresSafeArea(.keyboard)
+                }
+            }
+            .onPreferenceChange(HabitCardFramePreferenceKey.self) { frames in
+                guard isRunningOnPhone else { return }
+                habitCardFrames = frames.mapValues {
+                    $0.offsetBy(dx: -rootFrame.minX, dy: -rootFrame.minY)
+                }
+            }
+            .onChange(of: stampStagingIds) { oldValue, newValue in
+                handleStampStagingChange(from: oldValue, to: newValue, rootSize: rootSize)
             }
         }
         .safeAreaInset(edge: .top) {
@@ -136,6 +174,54 @@ struct PhoneTabScaffold: View {
                 .padding(.bottom, 4)
         }
         .refreshable { onSync() }
+    }
+
+    private func handleStampStagingChange(
+        from oldValue: Set<PersistentIdentifier>,
+        to newValue: Set<PersistentIdentifier>,
+        rootSize: CGSize
+    ) {
+        guard isRunningOnPhone else { return }
+
+        let releasedIds = oldValue.subtracting(newValue)
+        guard !releasedIds.isEmpty else { return }
+
+        let completedHabits = habits.filter { $0.completedDayKeys.contains(todayKey) }
+        for releasedId in releasedIds {
+            guard let habit = habits.first(where: { $0.persistentModelID == releasedId }),
+                  habit.completedDayKeys.contains(todayKey)
+            else {
+                activeStampFlights[releasedId] = nil
+                continue
+            }
+
+            let sourceFrame = habitCardFrames[releasedId]
+                ?? CGRect(x: rootSize.width * 0.10, y: rootSize.height * 0.42, width: rootSize.width * 0.80, height: 64)
+            let destination = DoneHabitPillsBackground.flightDestination(
+                for: habit,
+                among: completedHabits,
+                in: rootSize,
+                stampScaleMultiplier: phoneStampScale,
+                compactMaxStamps: phoneStampLimit
+            )
+            let fallbackAccent = habit.entryType == .habit ? CleanShotTheme.success : CleanShotTheme.accent
+            let flight = PhoneStampFlight(
+                id: releasedId,
+                habit: habit,
+                sourceFrame: sourceFrame,
+                target: destination?.point ?? CGPoint(x: rootSize.width / 2, y: max(72, rootSize.height * 0.14)),
+                accent: destination?.accent ?? fallbackAccent,
+                stampScale: destination?.scale ?? phoneStampScale
+            )
+
+            activeStampFlights[releasedId] = flight
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 760_000_000)
+                withAnimation(.easeOut(duration: 0.14)) {
+                    activeStampFlights[releasedId] = nil
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -212,6 +298,60 @@ struct PhoneTabScaffold: View {
                 .padding(.top, 4)
         }
         .refreshable { onSync() }
+    }
+}
+
+private struct PhoneStampFlight: Identifiable {
+    let id: PersistentIdentifier
+    let habit: Habit
+    let sourceFrame: CGRect
+    let target: CGPoint
+    let accent: Color
+    let stampScale: CGFloat
+}
+
+private struct PhoneStampFlightView: View {
+    let flight: PhoneStampFlight
+    let todayKey: String
+
+    @State private var arrived = false
+
+    private var sourceCenter: CGPoint {
+        CGPoint(x: flight.sourceFrame.midX, y: flight.sourceFrame.midY)
+    }
+
+    var body: some View {
+        ZStack {
+            HabitCard(
+                habit: flight.habit,
+                todayKey: todayKey,
+                onToggle: { _ in },
+                onDelete: { _ in },
+                stampNamespace: nil,
+                reportsFrame: false
+            )
+            .frame(width: max(flight.sourceFrame.width, 120))
+            .opacity(arrived ? 0 : 1)
+            .scaleEffect(arrived ? 0.72 : 1)
+
+            AmbientStamp(
+                habit: flight.habit,
+                todayKey: todayKey,
+                accent: flight.accent,
+                scale: flight.stampScale,
+                stampNamespace: nil
+            )
+            .opacity(arrived ? 1 : 0)
+            .scaleEffect(arrived ? 1 : 0.9)
+        }
+        .frame(
+            width: max(flight.sourceFrame.width, 120),
+            height: max(flight.sourceFrame.height, 92)
+        )
+        .position(arrived ? flight.target : sourceCenter)
+        .animation(.spring(response: 0.62, dampingFraction: 0.82), value: arrived)
+        .allowsHitTesting(false)
+        .onAppear { arrived = true }
     }
 }
 #endif

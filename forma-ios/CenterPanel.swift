@@ -12,6 +12,7 @@ struct CenterPanel: View {
     var clusters: [AccountabilityDashboard.HabitTimeCluster] = []
     let stampNamespace: Namespace.ID
     let stampStagingIds: Set<PersistentIdentifier>
+    var enableStampMatchedGeometry: Bool = true
     let onAddHabit: (HabitEntryType, Date?) -> Void
     let onToggleHabit: (Habit) -> Void
     let onDeleteHabit: (Habit) -> Void
@@ -78,7 +79,7 @@ struct CenterPanel: View {
                         onToggle: onToggleHabit,
                         onDelete: onDeleteHabit,
                         clusters: clusters,
-                        stampNamespace: stampNamespace
+                        stampNamespace: enableStampMatchedGeometry ? stampNamespace : nil
                     )
                     .padding(.top, 4)
                     .padding(.bottom, 60)
