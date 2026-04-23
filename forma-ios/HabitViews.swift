@@ -1061,12 +1061,6 @@ private struct SyncStatusBadge: View {
 private struct MatchedStampFrame: ViewModifier {
     let id: PersistentIdentifier
     let namespace: Namespace.ID?
-    /// HabitCard is the source of the morph (its frame defines where the
-    /// stamp arrives from). AmbientStamp is the destination and must be
-    /// `isSource: false` — otherwise SwiftUI picks between two "sources"
-    /// and the morph fails on iOS (macOS is more forgiving, but either
-    /// platform prefers exactly one source in a matched pair).
-    var isSource: Bool = true
 
     func body(content: Content) -> some View {
         if let namespace {
@@ -1075,7 +1069,7 @@ private struct MatchedStampFrame: ViewModifier {
                 in: namespace,
                 properties: .frame,
                 anchor: .center,
-                isSource: isSource
+                isSource: true
             )
         } else {
             content
@@ -1128,22 +1122,11 @@ struct DoneHabitPillsBackground: View {
                                 todayKey: todayKey,
                                 accent: slot.accent,
                                 scale: slot.scale,
-                                stampNamespace: nil
+                                stampNamespace: stampNamespace
                             )
                             .rotationEffect(.degrees(tilt))
                             .offset(x: xOff, y: yOff)
                             .position(x: slot.x, y: slot.y)
-                            // Apply matched geometry AFTER .position so the
-                            // stamp's destination frame is the real on-screen
-                            // coord (slot.x, slot.y), not the pre-positioned
-                            // natural frame. `isSource: false` makes the card
-                            // the authoritative source during the overlap —
-                            // without it the morph fails on iOS.
-                            .modifier(MatchedStampFrame(
-                                id: habit.persistentModelID,
-                                namespace: stampNamespace,
-                                isSource: false
-                            ))
                             .opacity(isHidden ? 0 : 1)
                             .transition(.opacity.combined(with: .scale(scale: 0.88)))
                         }

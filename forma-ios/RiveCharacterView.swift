@@ -20,11 +20,10 @@ struct MentorCharacterView: View {
     @State private var nudgeShown = false
     @State private var nudgeDismissTask: Task<Void, Never>? = nil
     @State private var isSending = false
-    @State private var frozenChatProgress: CGFloat?
-    // Keyboard height — used to lift the floating chat bubble above the
-    // on-screen keyboard on iOS/iPadOS. The bubble is positioned via
-    // `.position(...)`, which opts out of SwiftUI's automatic keyboard
-    // avoidance, so we track it manually.
+    // Keyboard height in screen coordinates. Used to lift the whole mentor
+    // block (character + bubble) above the on-screen keyboard while the chat
+    // is open. `.ignoresSafeArea(.keyboard)` keeps SwiftUI's automatic
+    // avoidance from interfering, so we apply the offset manually.
     @State private var keyboardHeight: CGFloat = 0
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -59,22 +58,41 @@ struct MentorCharacterView: View {
     private let baseNudgeBubbleWidth: CGFloat = 180
 
     var body: some View {
+        // When the keyboard is up with the chat open, we stop trying to anchor
+        // the bubble to the character — the character is hidden, and the bubble
+        // expands to fill the area above the keyboard. This avoids the
+        // keyboard-covers-input problem on both iPhone and iPad.
+        let keyboardExpanded = chatOpen && keyboardHeight > 0
+
         GeometryReader { geo in
             // iPhone (~390pt) shrinks character + bubble; iPad/Mac keeps original sizes.
             let narrow = geo.size.width < 500
             let characterHeight: CGFloat = narrow ? 108 : baseCharacterHeight
-            let bubbleWidth: CGFloat = min(baseBubbleWidth, geo.size.width - 24)
-            let bubbleHeight: CGFloat = narrow ? 260 : baseBubbleHeight
+            let compactBubbleWidth: CGFloat = min(baseBubbleWidth, geo.size.width - 24)
+            let compactBubbleHeight: CGFloat = narrow ? 260 : baseBubbleHeight
             let nudgeBubbleWidth: CGFloat = min(baseNudgeBubbleWidth, geo.size.width - 40)
 
             let charWidth = characterHeight * videoAspect
             let travelDistance = max(geo.size.width - charWidth, 0)
-            let displayProgress = chatOpen ? (frozenChatProgress ?? walker.positionProgress) : walker.positionProgress
-            let charX = displayProgress * travelDistance
+            let charX = walker.positionProgress * travelDistance
             let characterHeadX = charX + charWidth / 2
             // Tuned so the bubble sits just above the visible character head,
             // not above the frame's empty top padding.
             let visibleCharTop = characterHeight * 0.55
+
+            // Where the keyboard top sits inside our local coord space. When
+            // the parent applies `.ignoresSafeArea(.keyboard)`, geo.size.height
+            // spans the whole scaffold so this math is valid screen-wide.
+            let keyboardTopLocal = max(0, geo.size.height - keyboardHeight)
+
+            // In expanded mode, the bubble fills most of the space above the
+            // keyboard. In compact mode, it keeps the old size/anchor.
+            let bubbleWidth: CGFloat = keyboardExpanded
+                ? min(geo.size.width - 32, 640)
+                : compactBubbleWidth
+            let bubbleHeight: CGFloat = keyboardExpanded
+                ? max(220, min(keyboardTopLocal - 32, 560))
+                : compactBubbleHeight
 
             LoopingVideoView(videoName: "walk-bruce-01", isPlaying: walker.isWalking && !chatOpen)
                 .frame(width: charWidth, height: characterHeight)
@@ -87,6 +105,8 @@ struct MentorCharacterView: View {
                     x: charX + charWidth / 2,
                     y: geo.size.height - characterHeight / 2 + characterHeight * verticalSinkFraction
                 )
+                .opacity(keyboardExpanded ? 0 : 1)
+                .allowsHitTesting(!keyboardExpanded)
 
             if hasUnread && !chatOpen {
                 Circle()
@@ -103,20 +123,24 @@ struct MentorCharacterView: View {
                     )
             }
 
-            // Chat bubble — positioned just above the character's head. On
-            // iPhone it stays fixed while typing instead of chasing keyboard
-            // frame changes or the walking animation.
+            // Chat bubble — compact mode anchors just above the character's
+            // head; expanded mode (keyboard up) centres the bubble in the
+            // free space above the keyboard and ignores the character's
+            // location entirely.
             if chatOpen {
                 let rawBubbleY = geo.size.height - visibleCharTop - bubbleGap - bubbleHeight / 2
-                let fixedPhoneBubbleY = max(bubbleHeight / 2 + 12, min(rawBubbleY, geo.size.height * 0.36))
-                let keyboardLift: CGFloat = !narrow && keyboardHeight > 0
-                    ? max(0, (bubbleHeight / 2 + 16) - (geo.size.height - keyboardHeight - rawBubbleY))
-                    : 0
-                let bubbleY = narrow ? fixedPhoneBubbleY : rawBubbleY - keyboardLift
-                let bubbleCenterX = characterHeadX
+                let compactNarrowY = max(bubbleHeight / 2 + 12, min(rawBubbleY, geo.size.height * 0.36))
+                let compactY = narrow ? compactNarrowY : rawBubbleY
+                let expandedY = max(bubbleHeight / 2 + 16, keyboardTopLocal / 2)
+                let bubbleY = keyboardExpanded ? expandedY : compactY
+
+                let bubbleCenterX = keyboardExpanded ? geo.size.width / 2 : characterHeadX
                 let clampedX = clamped(bubbleCenterX, lowerBound: bubbleWidth / 2 + 8, upperBound: geo.size.width - bubbleWidth / 2 - 8)
                 let anchorX = (bubbleCenterX - (clampedX - bubbleWidth / 2)) / bubbleWidth
-                let scaleAnchor = UnitPoint(x: clamped(anchorX, lowerBound: 0, upperBound: 1), y: 1)
+                let scaleAnchor = UnitPoint(
+                    x: clamped(anchorX, lowerBound: 0, upperBound: 1),
+                    y: keyboardExpanded ? 0.5 : 1
+                )
 
                 MentorChatBubble(
                     mentorName: mentorName,
@@ -138,7 +162,7 @@ struct MentorCharacterView: View {
                 .zIndex(10)
             }
 
-            if let text = visibleNudge {
+            if let text = visibleNudge, !keyboardExpanded {
                 let nudgeCenterX = clamped(
                     characterHeadX,
                     lowerBound: nudgeBubbleWidth / 2 + 8,
@@ -206,7 +230,16 @@ struct MentorCharacterView: View {
                     }
                 }
         }
-        .frame(height: chatOpen ? baseCharacterHeight + baseBubbleHeight + bubbleGap : baseCharacterHeight)
+        // In expanded mode the view grows to fill the scaffold so the bubble
+        // has room to render above the keyboard. In compact mode it keeps the
+        // old footprint (character or character + short bubble stack).
+        .frame(
+            height: keyboardExpanded
+                ? nil
+                : (chatOpen ? baseCharacterHeight + baseBubbleHeight + bubbleGap : baseCharacterHeight)
+        )
+        .frame(maxHeight: keyboardExpanded ? .infinity : nil, alignment: .bottom)
+        .animation(.easeOut(duration: 0.25), value: keyboardHeight)
         .animation(.spring(response: 0.35, dampingFraction: 0.82), value: chatOpen)
     }
 
@@ -222,7 +255,10 @@ struct MentorCharacterView: View {
         chatAnimationTask?.cancel()
         hasUnread = false
         chatShown = false
-        frozenChatProgress = walker.positionProgress
+        // Freeze the walker so it doesn't advance in the background while the
+        // chat is open. Without this, `positionProgress` keeps ticking and the
+        // character teleports to the new spot when the bubble dismisses.
+        walker.pause()
 
         withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
             chatOpen = true
@@ -265,7 +301,7 @@ struct MentorCharacterView: View {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
                     chatOpen = false
                 }
-                frozenChatProgress = nil
+                walker.resume()
             }
         }
     }
@@ -310,7 +346,6 @@ struct MenteeCharacterView: View {
     @State private var chatShown = false
     @State private var chatAnimationTask: Task<Void, Never>? = nil
     @State private var hasAttention = false
-    @State private var frozenChatProgress: CGFloat?
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -428,8 +463,7 @@ struct MenteeCharacterView: View {
 
             let charWidth = characterHeight * videoAspect
             let travelDistance = max(geo.size.width - charWidth, 0)
-            let displayProgress = chatOpen ? (frozenChatProgress ?? walker.positionProgress) : walker.positionProgress
-            let charX = displayProgress * travelDistance
+            let charX = walker.positionProgress * travelDistance
             let characterHeadX = charX + charWidth / 2
             let visibleCharTop = characterHeight * 0.55
 
@@ -513,7 +547,7 @@ struct MenteeCharacterView: View {
         chatAnimationTask?.cancel()
         hasAttention = false
         chatShown = false
-        frozenChatProgress = walker.positionProgress
+        walker.pause()
         withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { chatOpen = true }
         chatAnimationTask = Task {
             await Task.yield()
@@ -532,7 +566,7 @@ struct MenteeCharacterView: View {
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { chatOpen = false }
-                frozenChatProgress = nil
+                walker.resume()
             }
         }
     }

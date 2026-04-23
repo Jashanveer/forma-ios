@@ -267,19 +267,14 @@ struct ContentViewScaffold: View {
                     .zIndex(190)
             }
         }
-        .overlay {
-            FormaIntroView(
-                backend: backend,
-                onReady: onSync
-            )
-            .transition(.opacity)
-            .zIndex(200)
-        }
         // Walking characters — pinned to the bottom of the scaffold on both
         // iPad and macOS. Width is capped on iPad so the character walks
         // within a band aligned to the center panel rather than wandering
         // across the full ~1200pt window. `.ignoresSafeArea(.keyboard)`
         // keeps them on-screen when a text field brings up the keyboard.
+        // Applied *before* the FormaIntroView overlay so the intro sits on
+        // top of them during cold-launch (the mentor must not peek out from
+        // behind the loading screen).
         .overlay(alignment: .bottom) {
             if showMentorCharacter && backend.isAuthenticated {
                 MentorCharacterView(backend: backend, nudge: $mentorNudge)
@@ -299,6 +294,14 @@ struct ContentViewScaffold: View {
                     #endif
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+        }
+        .overlay {
+            FormaIntroView(
+                backend: backend,
+                onReady: onSync
+            )
+            .transition(.opacity)
+            .zIndex(200)
         }
         #if os(macOS)
         .frame(minWidth: 900, minHeight: 600)

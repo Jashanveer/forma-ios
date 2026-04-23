@@ -46,6 +46,22 @@ class WalkerState {
         enterPause()
     }
 
+    /// Fully halt the walker — stops ticking and cancels any pending walk
+    /// cycle. `positionProgress` and `goingRight` stay where they are, so the
+    /// character freezes on screen. Safe to call repeatedly.
+    func pause() {
+        stopTicking()
+        pauseWorkItem?.cancel()
+        pauseWorkItem = nil
+        isWalking = false
+    }
+
+    /// Resume the idle → walk cycle from the current `positionProgress`.
+    func resume() {
+        guard !isWalking, pauseWorkItem == nil else { return }
+        enterPause()
+    }
+
     private func enterPause() {
         stopTicking()
         isWalking = false
